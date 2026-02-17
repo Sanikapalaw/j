@@ -1,69 +1,115 @@
 import streamlit as st
-from environment import PerishableInventoryEnv
-from agent import Agent
-from replay_buffer import ReplayBuffer
+import numpy as np
+import torch
+import torch.nn as nn
 
-st.title("Perishable Inventory Optimization — Reinforcement Learning")
+st.set_page_config(layout="wide")
 
-env = PerishableInventoryEnv()
-state_dim = len(env.get_state())
-action_dim = len(env.action_space)
+# ------------------ DQN MODEL ------------------
 
-agent = Agent(state_dim, action_dim)
-buffer = ReplayBuffer()
+class DQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim,128),
+            nn.ReLU(),
+            nn.Linear(128,128),
+            nn.ReLU(),
+            nn.Linear(128,64),
+            nn.ReLU(),
+            nn.Linear(64,action_dim)
+        )
 
-episodes = st.slider("Episodes", 10, 200, 50)
+    def forward(self,x):
+        return self.net(x)
 
-def render_inventory(inventory, shelf_life):
+
+# ------------------ AGENT ------------------
+
+class Agent:
+
+    def __init__(self):
+        self.actions = [0,5,10,20]
+        self.model = DQN(6,4)
+
+    def get_q_values(self,state):
+        s = torch.FloatTensor(state).unsqueeze(0)
+        with torch.no_grad():
+            q = self.model(s).numpy()[0]
+        return q
+
+
+agent = Agent()
+
+
+# ------------------ UI ------------------
+
+st.title("Perishable Inventory Optimization — Interactive RL")
+
+col1,col2 = st.columns([2,1])
+
+# ---------- USER INPUT PANEL ----------
+with col2:
+
+    st.header("User Input")
+
+    st.write("Inventory by freshness")
+
+    d5 = st.number_input("Day 5 (Fresh)",0,50,10)
+    d4 = st.number_input("Day 4",0,50,8)
+    d3 = st.number_input("Day 3",0,50,4)
+    d2 = st.number_input("Day 2",0,50,2)
+    d1 = st.number_input("Day 1 (Critical)",0,50,1)
+
+    demand = st.slider("Today's Demand",1,40,12)
+
+    hold_cost = st.slider("Holding Cost",0.0,1.0,0.1)
+    spoil_pen = st.slider("Spoilage Penalty",0.5,5.0,1.5)
+
+
+# ---------- STATE CREATION ----------
+state = np.array([
+    d5/20, d4/20, d3/20, d2/20, d1/20,
+    demand/50
+])
+
+q_vals = agent.get_q_values(state)
+best_action = np.argmax(q_vals)
+
+action_names = ["Hold","Order Small","Order Medium","Order Large"]
+
+
+# ---------- INVENTORY SHELF ----------
+with col1:
 
     st.subheader("Inventory Shelf")
 
-    age_dict = {i:0 for i in range(1, shelf_life+1)}
+    cols = st.columns(5)
+    inv = [d5,d4,d3,d2,d1]
 
-    for qty, age in inventory:
-        age_dict[age] += qty
-
-    cols = st.columns(shelf_life)
-
-    for i, age in enumerate(range(shelf_life,0,-1)):
-
-        qty = age_dict[age]
-
-        if age >= 3:
-            color = "🟢"
-        elif age == 2:
-            color = "🟡"
-        else:
-            color = "🔴"
-
-        cols[i].markdown(f"**Day {age}**")
-        cols[i].write(color * min(qty,10))
-        cols[i].caption(f"{qty} units")
+    for i,val in enumerate(inv):
+        color = "🟢" if i<2 else "🟡" if i==2 else "🔴"
+        cols[i].write(color * min(val,10))
+        cols[i].caption(f"{val} units")
 
 
-if st.button("Train Agent"):
+# ---------- Q VALUES PANEL ----------
+st.subheader("Agent Decision Visualization")
 
-    rewards = []
+qcols = st.columns(4)
 
-    for ep in range(episodes):
+for i in range(4):
 
-        state = env.reset()
-        total_reward = 0
+    if i == best_action:
+        qcols[i].success(
+            f"{action_names[i]}\n\nQ = {q_vals[i]:.3f}"
+        )
+    else:
+        qcols[i].info(
+            f"{action_names[i]}\n\nQ = {q_vals[i]:.3f}"
+        )
 
-        for step in range(30):
 
-            action = agent.act(state)
-            next_state, reward, done, info = env.step(action)
+st.markdown("### ✅ Recommended Action")
 
-            buffer.push(state, action, reward, next_state, done)
-            agent.train_step(buffer)
-
-            state = next_state
-            total_reward += reward
-
-        rewards.append(total_reward)
-
-    st.line_chart(rewards)
-    render_inventory(env.inventory, env.shelf_life)
-
-    st.success("Training Complete")
+st.success(action_names[best_action])
